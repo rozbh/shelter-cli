@@ -1,4 +1,6 @@
-package main
+// Package dns applies and verifies system DNS settings across
+// Windows, macOS, and Linux.
+package dns
 
 import (
 	"fmt"
@@ -7,6 +9,8 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+
+	"shelter-cli/internal/logging"
 )
 
 // isElevated reports whether we can change system DNS without the OS
@@ -19,19 +23,19 @@ func isElevated() bool {
 	return true
 }
 
-// setSystemDNS applies dns1/dns2 as the system's DNS servers.
+// SetSystemDNS applies dns1/dns2 as the system's DNS servers.
 // best-effort per OS — needs admin/root to actually take effect.
-func setSystemDNS(dns1, dns2 string) error {
-	logf("dns: setSystemDNS called with dns1=%s dns2=%s (os=%s)", dns1, dns2, runtime.GOOS)
+func SetSystemDNS(dns1, dns2 string) error {
+	logging.Logf("dns: SetSystemDNS called with dns1=%s dns2=%s (os=%s)", dns1, dns2, runtime.GOOS)
 	if !isElevated() {
-		logf("dns: NOT elevated (euid check failed) — refusing to run resolvectl/networksetup/netsh")
+		logging.Logf("dns: NOT elevated (euid check failed) — refusing to run resolvectl/networksetup/netsh")
 		// bail out BEFORE calling resolvectl/networksetup: on linux those go
 		// through polkit, which pops a password dialog for a non-root caller.
 		// skipping here means "not root" fails silently/cleanly instead of
 		// nagging for a password on every connect attempt and on exit.
 		return fmt.Errorf("not running as root/admin — run the whole app with sudo to set dns")
 	}
-	logf("dns: elevated check passed, proceeding")
+	logging.Logf("dns: elevated check passed, proceeding")
 
 	switch runtime.GOOS {
 	case "windows":
@@ -59,11 +63,11 @@ func findActiveWindowsInterface() (string, error) {
 	for _, line := range strings.Split(string(out), "\n") {
 		if m := winIfaceRe.FindStringSubmatch(line); len(m) == 2 {
 			iface := strings.TrimSpace(m[1])
-			logf("dns(windows): detected active interface %q", iface)
+			logging.Logf("dns(windows): detected active interface %q", iface)
 			return iface, nil
 		}
 	}
-	logf("dns(windows): no connected interface found in netsh output:\n%s", string(out))
+	logging.Logf("dns(windows): no connected interface found in netsh output:\n%s", string(out))
 	return "", fmt.Errorf("no connected interface found")
 }
 
@@ -73,21 +77,21 @@ func setDNSWindows(dns1, dns2 string) error {
 		return err
 	}
 
-	logf("dns(windows): setting primary dns %s on %q", dns1, iface)
+	logging.Logf("dns(windows): setting primary dns %s on %q", dns1, iface)
 	if out, err := exec.Command("netsh", "interface", "ip", "set", "dns",
 		"name="+iface, "static", dns1, "primary").CombinedOutput(); err != nil {
-		logf("dns(windows): set primary FAILED: %v (%s)", err, string(out))
+		logging.Logf("dns(windows): set primary FAILED: %v (%s)", err, string(out))
 		return fmt.Errorf("set primary dns on %q: %w (%s)", iface, err, string(out))
 	}
 
-	logf("dns(windows): adding secondary dns %s on %q", dns2, iface)
+	logging.Logf("dns(windows): adding secondary dns %s on %q", dns2, iface)
 	if out, err := exec.Command("netsh", "interface", "ip", "add", "dns",
 		"name="+iface, dns2, "index=2").CombinedOutput(); err != nil {
-		logf("dns(windows): add secondary FAILED: %v (%s)", err, string(out))
+		logging.Logf("dns(windows): add secondary FAILED: %v (%s)", err, string(out))
 		return fmt.Errorf("add secondary dns on %q: %w (%s)", iface, err, string(out))
 	}
 
-	logf("dns(windows): both entries applied ok on %q", iface)
+	logging.Logf("dns(windows): both entries applied ok on %q", iface)
 	return nil
 }
 
@@ -121,7 +125,7 @@ func setDNSMac(dns1, dns2 string) error {
 	if err != nil {
 		return err
 	}
-	logf("dns(mac): active services found: %v", services)
+	logging.Logf("dns(mac): active services found: %v", services)
 
 	// apply to every active service (usually just Wi-Fi or Ethernet is live,
 	// but setting on all active ones is harmless and covers both cases)
@@ -130,17 +134,17 @@ func setDNSMac(dns1, dns2 string) error {
 	for _, svc := range services {
 		out, err := exec.Command("networksetup", "-setdnsservers", svc, dns1, dns2).CombinedOutput()
 		if err != nil {
-			logf("dns(mac): set on %q FAILED: %v (%s)", svc, err, string(out))
+			logging.Logf("dns(mac): set on %q FAILED: %v (%s)", svc, err, string(out))
 			lastErr = fmt.Errorf("set dns on %q: %w (%s)", svc, err, string(out))
 			continue
 		}
-		logf("dns(mac): set on %q ok", svc)
+		logging.Logf("dns(mac): set on %q ok", svc)
 		applied++
 	}
 	if applied == 0 {
 		return lastErr
 	}
-	logf("dns(mac): applied to %d/%d services", applied, len(services))
+	logging.Logf("dns(mac): applied to %d/%d services", applied, len(services))
 	return nil
 }
 
@@ -156,11 +160,11 @@ func findDefaultLinuxInterface() (string, error) {
 	for i, f := range fields {
 		if f == "dev" && i+1 < len(fields) {
 			iface := fields[i+1]
-			logf("dns(linux): default interface is %q", iface)
+			logging.Logf("dns(linux): default interface is %q", iface)
 			return iface, nil
 		}
 	}
-	logf("dns(linux): no default interface found in: %s", strings.TrimSpace(string(out)))
+	logging.Logf("dns(linux): no default interface found in: %s", strings.TrimSpace(string(out)))
 	return "", fmt.Errorf("no default interface found")
 }
 
@@ -171,34 +175,34 @@ func setDNSLinux(dns1, dns2 string) error {
 	// just gets overwritten and fights resolved, so only fall back to it
 	// when resolvectl genuinely isn't present.
 	if _, lookErr := exec.LookPath("resolvectl"); lookErr == nil {
-		logf("dns(linux): resolvectl found on PATH, using it")
+		logging.Logf("dns(linux): resolvectl found on PATH, using it")
 		iface, ierr := findDefaultLinuxInterface()
 		if ierr != nil {
 			return fmt.Errorf("resolvectl present but no default interface found: %w", ierr)
 		}
 
-		logf("dns(linux): running: resolvectl dns %s %s %s", iface, dns1, dns2)
+		logging.Logf("dns(linux): running: resolvectl dns %s %s %s", iface, dns1, dns2)
 		out, err := exec.Command("resolvectl", "dns", iface, dns1, dns2).CombinedOutput()
 		if err != nil {
-			logf("dns(linux): resolvectl dns FAILED: %v (%s)", err, strings.TrimSpace(string(out)))
+			logging.Logf("dns(linux): resolvectl dns FAILED: %v (%s)", err, strings.TrimSpace(string(out)))
 			return fmt.Errorf("resolvectl dns %s %s %s failed (need root/sudo?): %w (%s)",
 				iface, dns1, dns2, err, strings.TrimSpace(string(out)))
 		}
 
 		// verify it actually took
 		verify, _ := exec.Command("resolvectl", "dns", iface).CombinedOutput()
-		logf("dns(linux): readback after set: %s", strings.TrimSpace(string(verify)))
+		logging.Logf("dns(linux): readback after set: %s", strings.TrimSpace(string(verify)))
 		return nil
 	}
 
 	// no resolvectl on this system at all: fall back to writing resolv.conf directly.
-	logf("dns(linux): resolvectl not found, writing /etc/resolv.conf directly")
+	logging.Logf("dns(linux): resolvectl not found, writing /etc/resolv.conf directly")
 	content := fmt.Sprintf("nameserver %s\nnameserver %s\n", dns1, dns2)
 	cmd := exec.Command("sh", "-c", fmt.Sprintf("printf '%s' > /etc/resolv.conf", content))
 	if out, err := cmd.CombinedOutput(); err != nil {
-		logf("dns(linux): writing /etc/resolv.conf FAILED: %v (%s)", err, strings.TrimSpace(string(out)))
+		logging.Logf("dns(linux): writing /etc/resolv.conf FAILED: %v (%s)", err, strings.TrimSpace(string(out)))
 		return fmt.Errorf("write /etc/resolv.conf (need root/sudo?): %w (%s)", err, strings.TrimSpace(string(out)))
 	}
-	logf("dns(linux): /etc/resolv.conf written ok")
+	logging.Logf("dns(linux): /etc/resolv.conf written ok")
 	return nil
 }
