@@ -51,15 +51,15 @@ jobs:
           CGO_ENABLED: 0
         run: |
           mkdir -p dist
-          out="dist/ipbox-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}"
+          out="dist/shelter-cli-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}"
           go build -trimpath -ldflags="-s -w" -o "$out" ./cmd/ipbox
           echo "Built $out"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ipbox-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: dist/ipbox-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
+          name: shelter-cli-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/shelter-cli-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
           if-no-files-found: error
 
   release:
