@@ -52,41 +52,44 @@ func SetSystemDNS(dns1, dns2 string) error {
 
 // findDefaultWindowsInterface asks Windows routing table directly for the
 // interface carrying the default route — not just "any connected" iface.
-func findDefaultWindowsInterface() (string, error) {
+func findDefaultWindowsInterfaceIndex() (string, error) {
 	out, err := exec.Command("powershell", "-NoProfile", "-Command",
-		`(Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Sort-Object -Property RouteMetric | Select-Object -First 1 -ExpandProperty InterfaceAlias)`).CombinedOutput()
+		`(Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Sort-Object -Property RouteMetric | Select-Object -First 1 -ExpandProperty InterfaceIndex)`).CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("get-netroute default: %w (%s)", err, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("get-netroute default index: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
-	iface := strings.TrimSpace(string(out))
-	if iface == "" {
-		return "", fmt.Errorf("no default route interface found")
+	idx := strings.TrimSpace(string(out))
+	if idx == "" {
+		return "", fmt.Errorf("no default route interface index found")
 	}
-	logging.Logf("dns(windows): default-route interface is %q", iface)
-	return iface, nil
+	logging.Logf("dns(windows): default-route interface index is %q", idx)
+	return idx, nil
 }
 
+// setDNSWindows binds DNS directly to the adapter object via ifIndex,
+// same "bind to real object, not name guess" fix applied on Linux (NM
+// connection UUID) and macOS (hardware port -> service mapping).
 func setDNSWindows(dns1, dns2 string) error {
-	iface, err := findDefaultWindowsInterface()
+	idx, err := findDefaultWindowsInterfaceIndex()
 	if err != nil {
 		return err
 	}
 
-	logging.Logf("dns(windows): setting primary dns %s on %q", dns1, iface)
-	if out, err := exec.Command("netsh", "interface", "ip", "set", "dns",
-		"name="+iface, "static", dns1, "primary").CombinedOutput(); err != nil {
-		logging.Logf("dns(windows): set primary FAILED: %v (%s)", err, string(out))
-		return fmt.Errorf("set primary dns on %q: %w (%s)", iface, err, string(out))
+	logging.Logf("dns(windows): setting dns %s,%s on interface index %s", dns1, dns2, idx)
+	script := fmt.Sprintf(
+		`Set-DnsClientServerAddress -InterfaceIndex %s -ServerAddresses ("%s","%s")`,
+		idx, dns1, dns2,
+	)
+	out, err := exec.Command("powershell", "-NoProfile", "-Command", script).CombinedOutput()
+	if err != nil {
+		logging.Logf("dns(windows): set FAILED: %v (%s)", err, string(out))
+		return fmt.Errorf("set-dnsclientserveraddress ifidx %s: %w (%s)", idx, err, strings.TrimSpace(string(out)))
 	}
 
-	logging.Logf("dns(windows): adding secondary dns %s on %q", dns2, iface)
-	if out, err := exec.Command("netsh", "interface", "ip", "add", "dns",
-		"name="+iface, dns2, "index=2").CombinedOutput(); err != nil {
-		logging.Logf("dns(windows): add secondary FAILED: %v (%s)", err, string(out))
-		return fmt.Errorf("add secondary dns on %q: %w (%s)", iface, err, string(out))
-	}
+	verify, _ := exec.Command("powershell", "-NoProfile", "-Command",
+		fmt.Sprintf(`(Get-DnsClientServerAddress -InterfaceIndex %s -AddressFamily IPv4).ServerAddresses`, idx)).CombinedOutput()
+	logging.Logf("dns(windows): readback after set: %s", strings.TrimSpace(string(verify)))
 
-	logging.Logf("dns(windows): both entries applied ok on %q", iface)
 	return nil
 }
 
