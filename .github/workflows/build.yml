@@ -63,9 +63,9 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: Attach binaries to release
+    name: Publish release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     steps:
       - name: Download all build artifacts
@@ -74,8 +74,30 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Set release vars
+        id: vars
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            # real tagged release, e.g. v1.0.0 or v1.0.0-beta.1
+            echo "tag_name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=auto" >> "$GITHUB_OUTPUT"
+            echo "make_latest=true" >> "$GITHUB_OUTPUT"
+          else
+            # push to main: rolling nightly build, same tag reused/overwritten each run
+            echo "tag_name=nightly" >> "$GITHUB_OUTPUT"
+            echo "name=Nightly Build" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "make_latest=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create/update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.vars.outputs.tag_name }}
+          name: ${{ steps.vars.outputs.name }}
+          prerelease: ${{ steps.vars.outputs.prerelease }}
+          make_latest: ${{ steps.vars.outputs.make_latest }}
+          body: ${{ github.ref == 'refs/heads/main' && format('Automated build from commit {0}.', github.sha) || '' }}
           files: dist/*
           fail_on_unmatched_files: true

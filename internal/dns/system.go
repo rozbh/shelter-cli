@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"regexp"
 	"runtime"
 	"strings"
 
@@ -51,28 +50,24 @@ func SetSystemDNS(dns1, dns2 string) error {
 
 // ---- windows ----
 
-var winIfaceRe = regexp.MustCompile(`(?i)^\s*\d+\s+\d+\s+\d+\s+connected\s+(.+?)\s*$`)
-
-// findActiveWindowsInterface parses `netsh interface ipv4 show interfaces`
-// and returns the name of the first "connected" interface.
-func findActiveWindowsInterface() (string, error) {
-	out, err := exec.Command("netsh", "interface", "ipv4", "show", "interfaces").CombinedOutput()
+// findDefaultWindowsInterface asks Windows routing table directly for the
+// interface carrying the default route — not just "any connected" iface.
+func findDefaultWindowsInterface() (string, error) {
+	out, err := exec.Command("powershell", "-NoProfile", "-Command",
+		`(Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Sort-Object -Property RouteMetric | Select-Object -First 1 -ExpandProperty InterfaceAlias)`).CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("netsh show interfaces: %w", err)
+		return "", fmt.Errorf("get-netroute default: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
-	for _, line := range strings.Split(string(out), "\n") {
-		if m := winIfaceRe.FindStringSubmatch(line); len(m) == 2 {
-			iface := strings.TrimSpace(m[1])
-			logging.Logf("dns(windows): detected active interface %q", iface)
-			return iface, nil
-		}
+	iface := strings.TrimSpace(string(out))
+	if iface == "" {
+		return "", fmt.Errorf("no default route interface found")
 	}
-	logging.Logf("dns(windows): no connected interface found in netsh output:\n%s", string(out))
-	return "", fmt.Errorf("no connected interface found")
+	logging.Logf("dns(windows): default-route interface is %q", iface)
+	return iface, nil
 }
 
 func setDNSWindows(dns1, dns2 string) error {
-	iface, err := findActiveWindowsInterface()
+	iface, err := findDefaultWindowsInterface()
 	if err != nil {
 		return err
 	}
@@ -97,54 +92,62 @@ func setDNSWindows(dns1, dns2 string) error {
 
 // ---- macOS ----
 
-func listMacNetworkServices() ([]string, error) {
-	out, err := exec.Command("networksetup", "-listallnetworkservices").CombinedOutput()
+// findDefaultMacInterface finds the BSD device (e.g. en0) actually carrying
+// the default route, then maps it to a network service name so DNS gets set
+// on the one connection actually in use — not every active service.
+func findDefaultMacInterface() (string, error) {
+	out, err := exec.Command("route", "-n", "get", "default").CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("listallnetworkservices: %w", err)
+		return "", fmt.Errorf("route -n get default: %w", err)
 	}
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	var services []string
-	for i, l := range lines {
-		if i == 0 {
-			continue // header: "An asterisk (*) denotes that a network service is disabled."
+	var device string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "interface:") {
+			device = strings.TrimSpace(strings.TrimPrefix(line, "interface:"))
+			break
 		}
+	}
+	if device == "" {
+		return "", fmt.Errorf("no interface found in route -n get default output")
+	}
+	logging.Logf("dns(mac): default-route device is %q", device)
+
+	// map device (en0) -> network service name (e.g. "Wi-Fi")
+	hw, err := exec.Command("networksetup", "-listallhardwareports").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("listallhardwareports: %w", err)
+	}
+	lines := strings.Split(string(hw), "\n")
+	var lastPort string
+	for _, l := range lines {
 		l = strings.TrimSpace(l)
-		if l == "" || strings.HasPrefix(l, "*") {
-			continue // skip disabled services
+		if strings.HasPrefix(l, "Hardware Port:") {
+			lastPort = strings.TrimSpace(strings.TrimPrefix(l, "Hardware Port:"))
+		} else if strings.HasPrefix(l, "Device:") {
+			dev := strings.TrimSpace(strings.TrimPrefix(l, "Device:"))
+			if dev == device {
+				logging.Logf("dns(mac): device %q maps to service %q", device, lastPort)
+				return lastPort, nil
+			}
 		}
-		services = append(services, l)
 	}
-	if len(services) == 0 {
-		return nil, fmt.Errorf("no active network services found")
-	}
-	return services, nil
+	return "", fmt.Errorf("no network service found for device %q", device)
 }
 
 func setDNSMac(dns1, dns2 string) error {
-	services, err := listMacNetworkServices()
+	svc, err := findDefaultMacInterface()
 	if err != nil {
 		return err
 	}
-	logging.Logf("dns(mac): active services found: %v", services)
+	logging.Logf("dns(mac): setting dns on active service %q only", svc)
 
-	// apply to every active service (usually just Wi-Fi or Ethernet is live,
-	// but setting on all active ones is harmless and covers both cases)
-	var lastErr error
-	applied := 0
-	for _, svc := range services {
-		out, err := exec.Command("networksetup", "-setdnsservers", svc, dns1, dns2).CombinedOutput()
-		if err != nil {
-			logging.Logf("dns(mac): set on %q FAILED: %v (%s)", svc, err, string(out))
-			lastErr = fmt.Errorf("set dns on %q: %w (%s)", svc, err, string(out))
-			continue
-		}
-		logging.Logf("dns(mac): set on %q ok", svc)
-		applied++
+	out, err := exec.Command("networksetup", "-setdnsservers", svc, dns1, dns2).CombinedOutput()
+	if err != nil {
+		logging.Logf("dns(mac): set on %q FAILED: %v (%s)", svc, err, string(out))
+		return fmt.Errorf("set dns on %q: %w (%s)", svc, err, string(out))
 	}
-	if applied == 0 {
-		return lastErr
-	}
-	logging.Logf("dns(mac): applied to %d/%d services", applied, len(services))
+	logging.Logf("dns(mac): set on %q ok", svc)
 	return nil
 }
 
@@ -152,57 +155,91 @@ func setDNSMac(dns1, dns2 string) error {
 
 // findDefaultLinuxInterface reads the default route to get the active iface name.
 func findDefaultLinuxInterface() (string, error) {
-	out, err := exec.Command("ip", "route", "show", "default").CombinedOutput()
+	out, err := exec.Command("ip", "route", "get", "8.8.8.8").CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("ip route show default: %w", err)
+		return "", fmt.Errorf("ip route get 8.8.8.8: %w", err)
 	}
 	fields := strings.Fields(string(out))
 	for i, f := range fields {
 		if f == "dev" && i+1 < len(fields) {
 			iface := fields[i+1]
-			logging.Logf("dns(linux): default interface is %q", iface)
+			logging.Logf("dns(linux): outbound interface is %q", iface)
 			return iface, nil
 		}
 	}
-	logging.Logf("dns(linux): no default interface found in: %s", strings.TrimSpace(string(out)))
-	return "", fmt.Errorf("no default interface found")
+	logging.Logf("dns(linux): no dev found in: %s", strings.TrimSpace(string(out)))
+	return "", fmt.Errorf("no outbound interface found")
 }
 
+// setDNSLinux sets DNS via NetworkManager (nmcli) when the interface is
+// NM-managed, so the change survives DHCP renew/reconnect and shows up
+// correctly in GUI network settings — falls back to resolvectl-only
+// (runtime, can get overwritten by NM) if nmcli isn't available.
 func setDNSLinux(dns1, dns2 string) error {
-	// preferred path: systemd-resolved. most modern distros (ubuntu, fedora,
-	// arch, debian12+) run this and manage /etc/resolv.conf as a symlink to
-	// their own stub file — writing resolv.conf directly on these systems
-	// just gets overwritten and fights resolved, so only fall back to it
-	// when resolvectl genuinely isn't present.
-	if _, lookErr := exec.LookPath("resolvectl"); lookErr == nil {
-		logging.Logf("dns(linux): resolvectl found on PATH, using it")
-		iface, ierr := findDefaultLinuxInterface()
-		if ierr != nil {
-			return fmt.Errorf("resolvectl present but no default interface found: %w", ierr)
-		}
+	iface, ierr := findDefaultLinuxInterface()
+	if ierr != nil {
+		return fmt.Errorf("no default interface found: %w", ierr)
+	}
 
-		logging.Logf("dns(linux): running: resolvectl dns %s %s %s", iface, dns1, dns2)
-		out, err := exec.Command("resolvectl", "dns", iface, dns1, dns2).CombinedOutput()
-		if err != nil {
-			logging.Logf("dns(linux): resolvectl dns FAILED: %v (%s)", err, strings.TrimSpace(string(out)))
-			return fmt.Errorf("resolvectl dns %s %s %s failed (need root/sudo?): %w (%s)",
-				iface, dns1, dns2, err, strings.TrimSpace(string(out)))
+	if _, lookErr := exec.LookPath("nmcli"); lookErr == nil {
+		if err := setDNSViaNetworkManager(iface, dns1, dns2); err == nil {
+			return nil
+		} else {
+			logging.Logf("dns(linux): nmcli path failed, falling back to resolvectl: %v", err)
 		}
+	}
 
-		// verify it actually took
-		verify, _ := exec.Command("resolvectl", "dns", iface).CombinedOutput()
-		logging.Logf("dns(linux): readback after set: %s", strings.TrimSpace(string(verify)))
+	return setDNSViaResolvectl(iface, dns1, dns2)
+}
+
+// setDNSViaNetworkManager finds the NM connection profile bound to iface,
+// sets ipv4.dns directly on it, disables ipv4.ignore-auto-dns so NM stops
+// re-pushing DHCP/router DNS, then reactivates the connection.
+func setDNSViaNetworkManager(iface, dns1, dns2 string) error {
+	out, err := exec.Command("nmcli", "-t", "-f", "GENERAL.CONNECTION", "device", "show", iface).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("nmcli device show %q: %w (%s)", iface, err, strings.TrimSpace(string(out)))
+	}
+	line := strings.TrimSpace(string(out))
+	conn := strings.TrimPrefix(line, "GENERAL.CONNECTION:")
+	conn = strings.TrimSpace(conn)
+	if conn == "" || conn == "--" {
+		return fmt.Errorf("no NetworkManager connection bound to %q", iface)
+	}
+	logging.Logf("dns(linux): iface %q bound to NM connection %q", iface, conn)
+
+	dnsVal := dns1 + " " + dns2
+	if out, err := exec.Command("nmcli", "con", "mod", conn, "ipv4.dns", dnsVal, "ipv4.ignore-auto-dns", "yes").CombinedOutput(); err != nil {
+		return fmt.Errorf("nmcli con mod %q: %w (%s)", conn, err, strings.TrimSpace(string(out)))
+	}
+	logging.Logf("dns(linux): set ipv4.dns=%q ignore-auto-dns=yes on connection %q", dnsVal, conn)
+
+	if out, err := exec.Command("nmcli", "con", "up", conn).CombinedOutput(); err != nil {
+		return fmt.Errorf("nmcli con up %q: %w (%s)", conn, err, strings.TrimSpace(string(out)))
+	}
+	logging.Logf("dns(linux): reactivated connection %q with new dns", conn)
+	return nil
+}
+
+// setDNSViaResolvectl is the old runtime-only path — kept as fallback for
+// systems without NetworkManager (e.g. plain systemd-networkd).
+func setDNSViaResolvectl(iface, dns1, dns2 string) error {
+	if _, lookErr := exec.LookPath("resolvectl"); lookErr != nil {
+		content := fmt.Sprintf("nameserver %s\nnameserver %s\n", dns1, dns2)
+		cmd := exec.Command("sh", "-c", fmt.Sprintf("printf '%s' > /etc/resolv.conf", content))
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("write /etc/resolv.conf (need root/sudo?): %w (%s)", err, strings.TrimSpace(string(out)))
+		}
 		return nil
 	}
 
-	// no resolvectl on this system at all: fall back to writing resolv.conf directly.
-	logging.Logf("dns(linux): resolvectl not found, writing /etc/resolv.conf directly")
-	content := fmt.Sprintf("nameserver %s\nnameserver %s\n", dns1, dns2)
-	cmd := exec.Command("sh", "-c", fmt.Sprintf("printf '%s' > /etc/resolv.conf", content))
-	if out, err := cmd.CombinedOutput(); err != nil {
-		logging.Logf("dns(linux): writing /etc/resolv.conf FAILED: %v (%s)", err, strings.TrimSpace(string(out)))
-		return fmt.Errorf("write /etc/resolv.conf (need root/sudo?): %w (%s)", err, strings.TrimSpace(string(out)))
+	logging.Logf("dns(linux): running: resolvectl dns %s %s %s", iface, dns1, dns2)
+	out, err := exec.Command("resolvectl", "dns", iface, dns1, dns2).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("resolvectl dns %s %s %s failed (need root/sudo?): %w (%s)",
+			iface, dns1, dns2, err, strings.TrimSpace(string(out)))
 	}
-	logging.Logf("dns(linux): /etc/resolv.conf written ok")
+	verify, _ := exec.Command("resolvectl", "dns", iface).CombinedOutput()
+	logging.Logf("dns(linux): readback after set: %s", strings.TrimSpace(string(verify)))
 	return nil
 }
