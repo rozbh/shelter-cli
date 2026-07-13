@@ -59,7 +59,7 @@ func Save(cfg Config) error {
 	}
 
 	dir := filepath.Dir(path)
-	probe := filepath.Join(dir, ".ipbox_write_test")
+	probe := filepath.Join(dir, ".shelter_write_test")
 	f, err := os.OpenFile(probe, os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return fmt.Errorf("no write permission in %s: %w", dir, err)
