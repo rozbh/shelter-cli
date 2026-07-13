@@ -22,7 +22,7 @@
 ## Project Structure
 
 ```text
-cmd/ipbox/
+cmd/shelter/
     Application entry point
     • Signal & panic handling
     • DNS reset on exit
@@ -74,7 +74,7 @@ go mod tidy
 Build:
 
 ```bash
-go build -o bin/ipbox ./cmd/ipbox
+go build -o bin/shelter ./cmd/shelter
 ```
 
 ---
@@ -86,7 +86,7 @@ go build -o bin/ipbox ./cmd/ipbox
 Administrator privileges are required because the application modifies your system DNS settings.
 
 ```bash
-sudo ./bin/ipbox
+sudo ./bin/shelter
 ```
 
 ### Windows
@@ -100,7 +100,7 @@ Run the executable from an elevated Command Prompt or PowerShell.
 You can also run directly with Go:
 
 ```bash
-go run ./cmd/ipbox
+go run ./cmd/shelter
 ```
 
 Configuration and log files are created in the current working directory.

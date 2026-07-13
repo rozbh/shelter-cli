@@ -1,4 +1,4 @@
-// Command ipbox is a terminal connectivity monitor and shelter DNS manager.
+// Command shelter is a terminal connectivity monitor and shelter DNS manager.
 package main
 
 import (
