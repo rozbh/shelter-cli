@@ -12,6 +12,11 @@ import (
 	"shelter-cli/internal/logging"
 )
 
+const (
+	FallbackDNS1 = "8.8.8.8"
+	FallbackDNS2 = "1.1.1.1"
+)
+
 // isElevated reports whether we can change system DNS without the OS
 // prompting for credentials (root on linux/mac). windows is left true here —
 // netsh just fails with access-denied if not elevated, no polkit-style popup.
