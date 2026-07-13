@@ -30,7 +30,7 @@ var resetDNSOnce sync.Once
 func resetDNSToFallback() {
 	resetDNSOnce.Do(func() {
 		logging.Logf("main: resetting dns to fallback %s/%s (exit/crash/signal path)", fallbackDNS1, fallbackDNS2)
-		if err := dns.SetSystemDNS(fallbackDNS1, fallbackDNS2); err != nil {
+		if err := dns.SetSystemDNS(dns.FallbackDNS1, dns.FallbackDNS2); err != nil {
 			logging.Logf("main: fallback dns reset FAILED: %v", err)
 			fmt.Fprintln(os.Stderr, "warning: could not reset dns to fallback:", err)
 		} else {

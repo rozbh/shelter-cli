@@ -41,7 +41,7 @@ func checksCmd(cfg config.Config) tea.Cmd {
 // and dns-broken-while-connected — all funnel through here.
 func resetAndConnectCmd(cfg config.Config) tea.Cmd {
 	return func() tea.Msg {
-		if err := dns.SetSystemDNS(fallbackDNS1, fallbackDNS2); err != nil {
+		if err := dns.SetSystemDNS(dns.FallbackDNS1, dns.FallbackDNS2); err != nil {
 			// not fatal, keep trying
 		}
 
