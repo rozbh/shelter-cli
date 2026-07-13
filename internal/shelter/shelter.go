@@ -21,6 +21,9 @@ const (
 	panelBase1  = "https://panel3.sheltertm.com/ip"
 	panelBase2  = "https://panel2.sheltertm.com/ip"
 	registerURL = "https://panel3.sheltertm.com/register-ip"
+
+	fallbackDNS1 = "8.8.8.8"
+	fallbackDNS2 = "1.1.1.1"
 )
 
 var csrfRe = regexp.MustCompile(`const\s+csrf\s*=\s*"([^"]+)"`)
@@ -185,11 +188,9 @@ const (
 // doesn't tell us anything true about right now, so every app start begins
 // at Disconnected and re-earns its status live.
 type Status struct {
-	State        State     `json:"state"`
-	IP           string    `json:"ip"`
-	UpdatedAt    time.Time `json:"updated_at"`
-	DNSVerified  bool      `json:"dns_verified"`
-	DNSVerifyMsg string    `json:"dns_verify_msg"`
+	State     State     `json:"state"`
+	IP        string    `json:"ip"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // Connect does the full flow: fetch panel session -> register ip -> on
@@ -199,48 +200,43 @@ type Status struct {
 func Connect(publicIP, dnsKey, dns1, dns2 string) (Status, error) {
 	logging.Logf("shelter: connect attempt starting — ip=%s dnskey=%s dns1=%s dns2=%s", publicIP, dnsKey, dns1, dns2)
 
+	// known-good dns first — panel3/panel2 hostname lookups must not depend
+	// on a possibly-stale/broken shelter dns left over from a prior attempt.
+	if err := dns.SetSystemDNS(fallbackDNS1, fallbackDNS2); err != nil {
+		logging.Logf("shelter: could not set fallback dns before connect (continuing anyway): %v", err)
+	}
+
 	sess, err := fetchPanelSession(dnsKey)
 	if err != nil {
 		logging.Logf("shelter: connect FAILED at fetch-session stage: %v", err)
-		st := Status{State: Failed, IP: publicIP, UpdatedAt: time.Now()}
-		return st, fmt.Errorf("fetch session: %w", err)
+		return Status{State: Failed, IP: publicIP, UpdatedAt: time.Now()}, fmt.Errorf("fetch session: %w", err)
 	}
 
 	resp, parsed, body, err := registerIP(sess, publicIP, dnsKey)
 	if err != nil {
 		logging.Logf("shelter: connect FAILED at register-ip stage: %v", err)
-		st := Status{State: Failed, IP: publicIP, UpdatedAt: time.Now()}
-		return st, fmt.Errorf("register ip: %w", err)
+		return Status{State: Failed, IP: publicIP, UpdatedAt: time.Now()}, fmt.Errorf("register ip: %w", err)
 	}
 
 	if resp.StatusCode != 200 || !parsed.Ok {
 		logging.Logf("shelter: connect FAILED — register-ip not ok (status=%d ok=%v)", resp.StatusCode, parsed.Ok)
-		st := Status{State: Failed, IP: publicIP, UpdatedAt: time.Now()}
-		return st, fmt.Errorf("register-ip not ok: status %d body %s", resp.StatusCode, string(body))
+		return Status{State: Failed, IP: publicIP, UpdatedAt: time.Now()}, fmt.Errorf("register-ip not ok: status %d body %s", resp.StatusCode, string(body))
 	}
-	logging.Logf("shelter: register-ip confirmed ok — proceeding to set dns")
+	logging.Logf("shelter: register-ip confirmed ok — switching dns to dns1/dns2 now")
 
-	// success: status 200 + ok:true -> point system DNS at dns1/dns2
-	dnsErr := dns.SetSystemDNS(dns1, dns2)
-
-	st := Status{State: Connected, IP: publicIP, UpdatedAt: time.Now()}
-
-	if dnsErr != nil {
-		logging.Logf("shelter: connect OK but set-dns FAILED: %v", dnsErr)
-		return st, fmt.Errorf("connected but set dns failed: %w", dnsErr)
+	// only now point system dns at the real shelter servers
+	if err := dns.SetSystemDNS(dns1, dns2); err != nil {
+		logging.Logf("shelter: registered but set-dns FAILED: %v", err)
+		return Status{State: Failed, IP: publicIP, UpdatedAt: time.Now()}, fmt.Errorf("registered but set dns failed: %w", err)
 	}
-	logging.Logf("shelter: set-dns command completed, verifying resolution now")
 
-	// dns command "succeeded" — now actually prove it resolves through the
-	// new servers before calling the job done.
+	// connected == dns actually resolves through dns1/dns2, not just "register-ip said ok"
 	verified, detail := dns.VerifyDNS(dns1, dns2)
-	st.DNSVerified = verified
-	st.DNSVerifyMsg = detail
-
 	if !verified {
-		logging.Logf("shelter: connect OK, dns set, but VERIFY FAILED: %s", detail)
-		return st, fmt.Errorf("dns set but verification failed: %s", detail)
+		logging.Logf("shelter: dns set but did not resolve: %s", detail)
+		return Status{State: Failed, IP: publicIP, UpdatedAt: time.Now()}, fmt.Errorf("dns set but did not resolve: %s", detail)
 	}
+
 	logging.Logf("shelter: connect + dns fully verified: %s", detail)
-	return st, nil
+	return Status{State: Connected, IP: publicIP, UpdatedAt: time.Now()}, nil
 }
