@@ -5,6 +5,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 )
@@ -74,4 +75,9 @@ func Save(cfg Config) error {
 		return fmt.Errorf("write failed: %w", err)
 	}
 	return nil
+}
+
+// ValidIP reports whether s parses as an IP address.
+func ValidIP(s string) bool {
+	return net.ParseIP(s) != nil
 }
