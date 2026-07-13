@@ -89,14 +89,6 @@ func shelterStatusStyled(st shelter.State) string {
 	}
 }
 
-// dnsVerifyStyled renders whether the actual dns resolve test passed.
-func dnsVerifyStyled(verified bool) string {
-	if verified {
-		return okStyle.Render("ok (resolved)")
-	}
-	return failStyle.Render("failed")
-}
-
 func (m Model) viewMain() string {
 	var content string
 
@@ -126,9 +118,6 @@ func (m Model) viewMain() string {
 		}
 		lines = append(lines, "")
 		lines = append(lines, checkLabelStyle.Render("Shelter")+shelterStatusStyled(m.shelter.State))
-		if m.shelter.State == shelter.Connected {
-			lines = append(lines, checkLabelStyle.Render("DNS check")+dnsVerifyStyled(m.shelter.DNSVerified))
-		}
 
 		if m.loading {
 			lines = append(lines, "")

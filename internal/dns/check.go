@@ -3,15 +3,11 @@ package dns
 import (
 	"context"
 	"fmt"
-	"net"
 	"time"
 
 	"shelter-cli/internal/logging"
 )
 
-// VerifyDNS queries dns1 (then dns2 as fallback) directly for a known host,
-// bypassing the OS resolver entirely — proves the DNS server itself answers,
-// independent of whether the system-wide netsh/resolvectl change took hold.
 func VerifyDNS(dns1, dns2 string) (ok bool, detail string) {
 	testHost := "google.com"
 	logging.Logf("dns-verify: querying %s directly against %s", testHost, dns1)
@@ -34,14 +30,7 @@ func VerifyDNS(dns1, dns2 string) (ok bool, detail string) {
 }
 
 func queryAgainst(server, host string) (bool, string) {
-	resolver := &net.Resolver{
-		PreferGo: true,
-		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-			d := net.Dialer{Timeout: 5 * time.Second}
-			return d.DialContext(ctx, "udp", server+":53")
-		},
-	}
-
+	resolver := NewResolver(server)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 

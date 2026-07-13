@@ -167,24 +167,24 @@ func (m Model) updateMain(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.lastRun = time.Now()
 
 		if !internetUp(m.checks) {
-			// no internet -> shelter can't be reached either
 			logging.Logf("tui: internet is DOWN, marking shelter disconnected")
 			m.shelter.State = shelter.Disconnected
 			return m, nil
 		}
 
+		// network up but dns resolution broken -> current dns1/dns2 stopped
+		// working (or got overwritten). don't trust "Connected" anymore, force
+		// it back to Failed so the block below retries this same tick.
+		if dnsBroken(m.checks) && m.shelter.State == shelter.Connected {
+			logging.Logf("tui: dns checks failing while internet up, forcing shelter reconnect")
+			m.shelter.State = shelter.Failed
+		}
 		// internet is up: if we're not already connected (or already trying),
 		// kick off a connect attempt. covers first open + every retry on tick.
 		if m.shelter.State != shelter.Connected && m.shelter.State != shelter.Connecting {
-			ip := publicIPFrom(m.checks)
-			if ip == "" {
-				logging.Logf("tui: internet up but no public ip resolved, marking shelter failed")
-				m.shelter.State = shelter.Failed
-				return m, nil
-			}
-			logging.Logf("tui: internet up, shelter status=%s, triggering connect attempt (ip=%s)", m.shelter.State, ip)
+			logging.Logf("tui: internet up, shelter status=%s, triggering reconnect (reset dns + fetch ip + connect)", m.shelter.State)
 			m.shelter.State = shelter.Connecting
-			return m, shelterConnectCmd(ip, m.cfg.DNSKey, m.cfg.DNS1, m.cfg.DNS2)
+			return m, resetAndConnectCmd(m.cfg)
 		}
 		return m, nil
 
