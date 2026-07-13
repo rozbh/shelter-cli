@@ -1,6 +1,3 @@
-// Package logging provides a process-wide timestamped logger that writes
-// only to a persistent shelter.log file in the current working directory —
-// never to stderr, so it doesn't interfere with the TUI on screen.
 package logging
 
 import (
@@ -11,7 +8,9 @@ import (
 	"time"
 )
 
-var logWriter io.Writer = io.Discard // fallback if file can't be opened: drop logs, don't spam stderr
+const maxLogSize = 5 * 1024 * 1024 // 5MB
+
+var logWriter io.Writer = io.Discard
 
 func init() {
 	dir, err := os.Getwd()
@@ -21,23 +20,30 @@ func init() {
 	}
 	path := filepath.Join(dir, "shelter.log")
 
+	rotateIfLarge(path)
+
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "warning: could not open log file, logs will be dropped:", err)
 		return
 	}
 
-	// file only — the TUI owns the screen, so nothing should print to
-	// stderr while it's running.
 	logWriter = f
 	Logf("==== shelter-cli started, logging to %s ====", path)
 }
 
-// Logf writes a timestamped debug line to shelter.log in the working
-// directory. Review a past run any time with:
-//
-//	cat shelter.log
-//	tail -f shelter.log   (while it's running)
+// rotateIfLarge renames shelter.log -> shelter.log.old (overwriting any
+// previous .old) if it's grown past maxLogSize, keeping disk use bounded.
+func rotateIfLarge(path string) {
+	info, err := os.Stat(path)
+	if err != nil || info.Size() < maxLogSize {
+		return
+	}
+	old := path + ".old"
+	_ = os.Remove(old)
+	_ = os.Rename(path, old)
+}
+
 func Logf(format string, args ...interface{}) {
 	ts := time.Now().Format("15:04:05.000")
 	fmt.Fprintf(logWriter, "[%s] "+format+"\n", append([]interface{}{ts}, args...)...)

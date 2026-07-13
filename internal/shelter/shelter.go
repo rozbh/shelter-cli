@@ -69,6 +69,7 @@ func fetchOnePanel(target string) (sessionData, error) {
 	var sess sessionData
 
 	client := &http.Client{
+		Timeout: 15 * time.Second,
 		// don't follow redirects automatically so we don't lose Set-Cookie headers
 		// from the first hop if the panel ever redirects; adjust if needed.
 	}
@@ -143,7 +144,7 @@ func registerIP(sess sessionData, publicIP, dnsKey string) (*http.Response, regi
 	req.AddCookie(&http.Cookie{Name: "XSRF-TOKEN", Value: sess.XSRFToken})
 	req.AddCookie(&http.Cookie{Name: "laravel_session", Value: sess.LaravelSession})
 
-	client := &http.Client{}
+	client := &http.Client{Timeout: 15 * time.Second}
 	logging.Logf("shelter: POST %s body: token=%s ip_addr=%s skip_phone=true _token=%s", registerURL, dnsKey, publicIP, short(sess.CSRF))
 	resp, err := client.Do(req)
 	if err != nil {

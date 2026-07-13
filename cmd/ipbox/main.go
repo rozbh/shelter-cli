@@ -54,13 +54,16 @@ func warnIfNotElevated() {
 func main() {
 	warnIfNotElevated()
 
-	// catch ctrl+c / kill signals so a forced close still resets dns
+	p := tea.NewProgram(tui.NewModel())
+
+	// catch ctrl+c / kill signals — Kill() lets bubbletea restore the
+	// terminal properly and makes p.Run() return, instead of yanking
+	// the process out from under it with os.Exit while it's still running.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		resetDNSToFallback()
-		os.Exit(1)
+		p.Kill()
 	}()
 
 	// catch unhandled panics so a crash still resets dns before dying
@@ -72,10 +75,9 @@ func main() {
 		}
 	}()
 
-	p := tea.NewProgram(tui.NewModel())
 	_, err := p.Run()
 
-	// normal close (q / esc / program ended on its own) also resets dns
+	// normal close (q/esc/ctrl+c/program ended) all reset dns here now
 	resetDNSToFallback()
 
 	if err != nil {

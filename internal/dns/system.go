@@ -229,9 +229,8 @@ func setDNSViaNetworkManager(iface, dns1, dns2 string) error {
 func setDNSViaResolvectl(iface, dns1, dns2 string) error {
 	if _, lookErr := exec.LookPath("resolvectl"); lookErr != nil {
 		content := fmt.Sprintf("nameserver %s\nnameserver %s\n", dns1, dns2)
-		cmd := exec.Command("sh", "-c", fmt.Sprintf("printf '%s' > /etc/resolv.conf", content))
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("write /etc/resolv.conf (need root/sudo?): %w (%s)", err, strings.TrimSpace(string(out)))
+		if err := os.WriteFile("/etc/resolv.conf", []byte(content), 0o644); err != nil {
+			return fmt.Errorf("write /etc/resolv.conf (need root/sudo?): %w", err)
 		}
 		return nil
 	}

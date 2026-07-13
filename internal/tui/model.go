@@ -120,6 +120,12 @@ func (m Model) updateSetup(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "enter":
 			if m.allFilled() {
+				dns1, dns2 := m.inputs[0].Value(), m.inputs[1].Value()
+				if !config.ValidIP(dns1) || !config.ValidIP(dns2) {
+					m.saveErr = "dns1/dns2 must be valid IP addresses"
+					return m, nil
+				}
+
 				cfg := config.Config{
 					DNS1:   m.inputs[0].Value(),
 					DNS2:   m.inputs[1].Value(),
