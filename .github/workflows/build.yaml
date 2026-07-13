@@ -12,8 +12,28 @@ permissions:
   contents: write # needed to attach binaries to a GitHub Release on tag push
 
 jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./... -race
+
   build:
     name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    needs: test
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -91,6 +111,7 @@ jobs:
               echo "make_latest=true" >> "$GITHUB_OUTPUT"
             fi
           else
+            # push to main: rolling nightly build, same tag reused/overwritten each run
             echo "tag_name=nightly" >> "$GITHUB_OUTPUT"
             echo "name=Nightly Build" >> "$GITHUB_OUTPUT"
             echo "prerelease=true" >> "$GITHUB_OUTPUT"
