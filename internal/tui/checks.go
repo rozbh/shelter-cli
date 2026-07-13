@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"os/exec"
 	"regexp"
 	"runtime"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"shelter-cli/internal/config"
+	"shelter-cli/internal/dns"
 )
 
 // fixed check targets — always the same, user never edits these.
@@ -52,9 +52,21 @@ func pingTarget(host string) (bool, string) {
 	return false, "timeout"
 }
 
-// getPublicIP fetches public IP (no ping — plain HTTP lookup).
-func getPublicIP() (string, error) {
-	client := http.Client{Timeout: 10 * time.Second}
+// dnsBroken reports true if dns-resolved checks failed while raw ip pings
+// are fine — google.com/soft98.ir go through the system resolver, 8.8.8.8/
+// 1.1.1.1 don't. this pattern means dns1/dns2 currently set aren't resolving
+// anymore, even though the network itself is up.
+func dnsBroken(checks []checkResult) bool {
+	for _, c := range checks {
+		if c.Label == "DNS/Internet" && !c.OK {
+			return true
+		}
+	}
+	return false
+}
+
+func getPublicIP(server string) (string, error) {
+	client := dns.NewHTTPClient(server, 10*time.Second)
 	resp, err := client.Get("https://api.ipify.org?format=json")
 	if err != nil {
 		return "", err
@@ -100,7 +112,7 @@ func runChecks(cfg config.Config) []checkResult {
 	var ipRow checkResult
 	ipDone := make(chan struct{})
 	go func() {
-		ip, err := getPublicIP()
+		ip, err := getPublicIP(fallbackDNS1)
 		if err != nil {
 			ipRow = checkResult{Label: "Public IP", Target: "N/A", OK: false, Latency: "-"}
 		} else {
