@@ -1,6 +1,6 @@
 # Shelter CLI
 
-> An unofficial command-line client for [ShelterTM]([url](https://www.sheltertm.com/)) that makes connecting and managing Shelter DNS from your terminal simple and fast.
+> An unofficial command-line client for [ShelterTM](https://www.sheltertm.com/) that makes connecting and managing Shelter DNS from your terminal simple and fast.
 
 > **Disclaimer**
 >
@@ -180,7 +180,7 @@ This is useful for troubleshooting DNS configuration, connectivity issues, and S
 
 This project is an independent open-source client.
 
-It is **not** an official ShelterTM product and is not affiliated with or endorsed by ShelterTM. All trademarks and service marks belong to their respective owners.
+It is **not** an official [ShelterTM](https://www.sheltertm.com/) product and is not affiliated with or endorsed by ShelterTM. All trademarks and service marks belong to their respective owners.
 
 ---
 
