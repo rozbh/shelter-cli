@@ -78,13 +78,19 @@ jobs:
         id: vars
         run: |
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            # real tagged release, e.g. v1.0.0 or v1.0.0-beta.1
-            echo "tag_name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-            echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-            echo "prerelease=auto" >> "$GITHUB_OUTPUT"
-            echo "make_latest=true" >> "$GITHUB_OUTPUT"
+            tag="${{ github.ref_name }}"
+            echo "tag_name=$tag" >> "$GITHUB_OUTPUT"
+            echo "name=$tag" >> "$GITHUB_OUTPUT"
+            if [[ "$tag" == *-* ]]; then
+              # contains a hyphen -> semver pre-release, e.g. v0.3.4-beta.412
+              echo "prerelease=true" >> "$GITHUB_OUTPUT"
+              echo "make_latest=false" >> "$GITHUB_OUTPUT"
+            else
+              # plain vX.Y.Z -> real release
+              echo "prerelease=false" >> "$GITHUB_OUTPUT"
+              echo "make_latest=true" >> "$GITHUB_OUTPUT"
+            fi
           else
-            # push to main: rolling nightly build, same tag reused/overwritten each run
             echo "tag_name=nightly" >> "$GITHUB_OUTPUT"
             echo "name=Nightly Build" >> "$GITHUB_OUTPUT"
             echo "prerelease=true" >> "$GITHUB_OUTPUT"
