@@ -201,10 +201,23 @@ func Connect(publicIP, dnsKey, dns1, dns2 string) (Status, error) {
 		return failStatus(publicIP), fmt.Errorf("registered but set dns failed: %w", err)
 	}
 
-	verified, detail := dns.VerifyDNS(dns1, dns2)
+	// nmcli/resolvectl reactivate = brief iface flap right after set.
+	// first verify can hit that dead window → retry w/ backoff before fail.
+	var verified bool
+	var detail string
+	for attempt := 1; attempt <= 3; attempt++ {
+		verified, detail = dns.VerifyDNS(dns1, dns2)
+		if verified {
+			break
+		}
+		logging.Logf("shelter: dns verify attempt %d/3 failed: %s", attempt, detail)
+		if attempt < 3 {
+			time.Sleep(time.Duration(attempt) * time.Second)
+		}
+	}
 	if !verified {
-		logging.Logf("shelter: dns set but did not resolve: %s", detail)
-		return failStatus(publicIP), fmt.Errorf("dns set but did not resolve: %s", detail)
+		logging.Logf("shelter: dns set but did not resolve after retries: %s", detail)
+		return failStatus(publicIP), fmt.Errorf("dns set but did not resolve after retries: %s", detail)
 	}
 
 	logging.Logf("shelter: connect + dns fully verified: %s", detail)
