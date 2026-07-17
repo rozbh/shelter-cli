@@ -41,16 +41,23 @@ func SetSystemDNS(dns1, dns2 string) error {
 	}
 	logging.Logf("dns: elevated check passed, proceeding")
 
+	var err error
 	switch runtime.GOOS {
 	case "windows":
-		return setDNSWindows(dns1, dns2)
+		err = setDNSWindows(dns1, dns2)
 	case "darwin":
-		return setDNSMac(dns1, dns2)
+		err = setDNSMac(dns1, dns2)
 	case "linux":
-		return setDNSLinux(dns1, dns2)
+		err = setDNSLinux(dns1, dns2)
 	default:
 		return fmt.Errorf("unsupported OS for DNS set: %s", runtime.GOOS)
 	}
+	if err != nil {
+		return err
+	}
+	flushDNSCache()
+	return nil
+
 }
 
 // ---- windows ----
@@ -249,4 +256,28 @@ func setDNSViaResolvectl(iface, dns1, dns2 string) error {
 	verify, _ := exec.Command("resolvectl", "dns", iface).CombinedOutput()
 	logging.Logf("dns(linux): readback after set: %s", strings.TrimSpace(string(verify)))
 	return nil
+}
+
+func flushDNSCache() {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("ipconfig", "/flushdns")
+	case "darwin":
+		//cmd = exec.Command("dscacheutil", "-flushcache")
+	case "linux":
+		if _, err := exec.LookPath("resolvectl"); err == nil {
+			//cmd = exec.Command("resolvectl", "flush-caches")
+		} else {
+			return // no systemd-resolved, nothing to flush
+		}
+	default:
+		return
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		logging.Logf("dns: flush cache FAILED (%s): %v (%s)", runtime.GOOS, err, strings.TrimSpace(string(out)))
+		return
+	}
+	logging.Logf("dns: flush cache ok (%s)", runtime.GOOS)
 }
