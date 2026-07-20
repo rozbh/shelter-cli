@@ -14,11 +14,13 @@ import (
 	"shelter-cli/internal/logging"
 )
 
-const (
-	panelBase1  = "https://panel3.sheltertm.com/ip"
-	panelBase2  = "https://panel2.sheltertm.com/ip"
-	registerURL = "https://panel3.sheltertm.com/register-ip"
+var panelDomains = []string{
+	"https://panel1.sheltertm.com",
+	"https://panel2.sheltertm.com",
+	"https://panel3.sheltertm.com",
+}
 
+const (
 	fallbackDNS1 = "8.8.8.8"
 	fallbackDNS2 = "1.1.1.1"
 )
@@ -29,30 +31,6 @@ type sessionData struct {
 	XSRFToken      string
 	LaravelSession string
 	CSRF           string
-}
-
-// fetchPanelSession tries panel3 first, falls back to panel2. client
-// resolves hostnames against a known-good dns (caller passes fallback dns,
-// not system dns — see Connect).
-func fetchPanelSession(client *http.Client, dnsKey string) (sessionData, error) {
-	url1 := panelBase1 + "/" + dnsKey
-	url2 := panelBase2 + "/" + dnsKey
-
-	logging.Logf("shelter: trying panel3 -> %s", url1)
-	sess, err := fetchOnePanel(client, url1)
-	if err == nil {
-		logging.Logf("shelter: panel3 ok — xsrf=%s session=%s csrf=%s", short(sess.XSRFToken), short(sess.LaravelSession), short(sess.CSRF))
-		return sess, nil
-	}
-	logging.Logf("shelter: panel3 failed: %v — falling back to panel2 -> %s", err, url2)
-
-	sess2, err2 := fetchOnePanel(client, url2)
-	if err2 != nil {
-		logging.Logf("shelter: panel2 also failed: %v", err2)
-		return sessionData{}, fmt.Errorf("both panels failed: panel3: %v | panel2: %v", err, err2)
-	}
-	logging.Logf("shelter: panel2 ok — xsrf=%s session=%s csrf=%s", short(sess2.XSRFToken), short(sess2.LaravelSession), short(sess2.CSRF))
-	return sess2, nil
 }
 
 func short(s string) string {
@@ -116,7 +94,7 @@ type registerResponse struct {
 	Ok bool `json:"ok"`
 }
 
-func registerIP(client *http.Client, sess sessionData, publicIP, dnsKey string) (*http.Response, registerResponse, []byte, error) {
+func registerIP(client *http.Client, sess sessionData, publicIP, dnsKey, registerURL string) (*http.Response, registerResponse, []byte, error) {
 	form := url.Values{}
 	form.Set("token", dnsKey)
 	form.Set("ip_addr", publicIP)
@@ -154,6 +132,29 @@ func registerIP(client *http.Client, sess sessionData, publicIP, dnsKey string) 
 	return resp, parsed, body, nil
 }
 
+// tryDomain: one domain, full flow — fetch session, register ip.
+// any step fail → caller moves to next domain.
+func tryDomain(client *http.Client, domain, dnsKey, publicIP string) error {
+	sessionURL := domain + "/ip/" + dnsKey
+	registerURL := domain + "/register-ip"
+
+	logging.Logf("shelter: trying domain %s", domain)
+
+	sess, err := fetchOnePanel(client, sessionURL)
+	if err != nil {
+		return fmt.Errorf("fetch session: %w", err)
+	}
+
+	resp, parsed, body, err := registerIP(client, sess, publicIP, dnsKey, registerURL)
+	if err != nil {
+		return fmt.Errorf("register ip: %w", err)
+	}
+	if resp.StatusCode != 200 || !parsed.Ok {
+		return fmt.Errorf("register-ip not ok: status %d body %s", resp.StatusCode, string(body))
+	}
+	return nil
+}
+
 type State string
 
 const (
@@ -169,31 +170,28 @@ type Status struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// Connect: fetch panel session -> register ip -> switch system dns to
-// dns1/dns2 -> verify it resolves. all panel/register http traffic goes
-// through a client bound to fallbackDNS1, independent of whatever the
-// system resolver is doing — same guarantee on linux/mac/windows since it's
-// plain Go networking, not an OS command.
+// Connect: try each domain in order, full flow per domain (session+register).
+// first domain to fully succeed wins. then switch system dns, verify.
 func Connect(publicIP, dnsKey, dns1, dns2 string) (Status, error) {
 	logging.Logf("shelter: connect attempt starting — ip=%s dnskey=%s dns1=%s dns2=%s", publicIP, dnsKey, dns1, dns2)
 
 	panelClient := dns.NewHTTPClient(dns.FallbackDNS1, 15*time.Second)
 
-	sess, err := fetchPanelSession(panelClient, dnsKey)
-	if err != nil {
-		logging.Logf("shelter: connect FAILED at fetch-session stage: %v", err)
-		return failStatus(publicIP), fmt.Errorf("fetch session: %w", err)
+	var lastErr error
+	ok := false
+	for _, domain := range panelDomains {
+		if err := tryDomain(panelClient, domain, dnsKey, publicIP); err != nil {
+			logging.Logf("shelter: domain %s failed: %v", domain, err)
+			lastErr = err
+			continue
+		}
+		logging.Logf("shelter: domain %s succeeded", domain)
+		ok = true
+		break
 	}
-
-	resp, parsed, body, err := registerIP(panelClient, sess, publicIP, dnsKey)
-	if err != nil {
-		logging.Logf("shelter: connect FAILED at register-ip stage: %v", err)
-		return failStatus(publicIP), fmt.Errorf("register ip: %w", err)
-	}
-
-	if resp.StatusCode != 200 || !parsed.Ok {
-		logging.Logf("shelter: connect FAILED — register-ip not ok (status=%d ok=%v)", resp.StatusCode, parsed.Ok)
-		return failStatus(publicIP), fmt.Errorf("register-ip not ok: status %d body %s", resp.StatusCode, string(body))
+	if !ok {
+		logging.Logf("shelter: connect FAILED — all domains exhausted")
+		return failStatus(publicIP), fmt.Errorf("all panel domains failed: %w", lastErr)
 	}
 
 	if err := dns.SetSystemDNS(dns1, dns2); err != nil {
@@ -201,8 +199,6 @@ func Connect(publicIP, dnsKey, dns1, dns2 string) (Status, error) {
 		return failStatus(publicIP), fmt.Errorf("registered but set dns failed: %w", err)
 	}
 
-	// nmcli/resolvectl reactivate = brief iface flap right after set.
-	// first verify can hit that dead window → retry w/ backoff before fail.
 	var verified bool
 	var detail string
 	for attempt := 1; attempt <= 3; attempt++ {
@@ -224,7 +220,6 @@ func Connect(publicIP, dnsKey, dns1, dns2 string) (Status, error) {
 	return Status{State: Connected, IP: publicIP, UpdatedAt: time.Now()}, nil
 }
 
-// internal/shelter/shelter.go
 func failStatus(ip string) Status {
 	return Status{State: Failed, IP: ip, UpdatedAt: time.Now()}
 }

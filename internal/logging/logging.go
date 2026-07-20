@@ -45,6 +45,6 @@ func rotateIfLarge(path string) {
 }
 
 func Logf(format string, args ...interface{}) {
-	ts := time.Now().Format("15:04:05.000")
+	ts := time.Now().Format("2006-01-02 15:04:05.000")
 	fmt.Fprintf(logWriter, "[%s] "+format+"\n", append([]interface{}{ts}, args...)...)
 }

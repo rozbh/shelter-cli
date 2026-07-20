@@ -264,9 +264,11 @@ func flushDNSCache() {
 	case "windows":
 		cmd = exec.Command("ipconfig", "/flushdns")
 	case "darwin":
+		return
 		//cmd = exec.Command("dscacheutil", "-flushcache")
 	case "linux":
 		if _, err := exec.LookPath("resolvectl"); err == nil {
+			return
 			//cmd = exec.Command("resolvectl", "flush-caches")
 		} else {
 			return // no systemd-resolved, nothing to flush
