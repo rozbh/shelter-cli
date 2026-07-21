@@ -15,7 +15,7 @@ import (
 )
 
 var panelDomains = []string{
-	"https://panel1.sheltertm.com",
+	"https://panel.sheltertm.com",
 	"https://panel2.sheltertm.com",
 	"https://panel3.sheltertm.com",
 }
