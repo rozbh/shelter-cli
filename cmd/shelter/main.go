@@ -53,7 +53,7 @@ func warnIfNotElevated() {
 
 func main() {
 	warnIfNotElevated()
-
+	installWindowsCtrlHandler(resetDNSToFallback) // ← new line
 	p := tea.NewProgram(tui.NewModel())
 
 	// catch ctrl+c / kill signals — Kill() lets bubbletea restore the
