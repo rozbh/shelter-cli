@@ -12,6 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,3 +34,8 @@ jobs:
           git config user.email "actions@github.com"
           git tag ${{ steps.nextver.outputs.tag }}
           git push origin ${{ steps.nextver.outputs.tag }}
+
+      - name: trigger build & release for new tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run build.yaml --ref ${{ steps.nextver.outputs.tag }}
