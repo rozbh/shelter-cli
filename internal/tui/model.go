@@ -30,7 +30,10 @@ type Model struct {
 	loading bool
 	lastRun time.Time
 
-	shelter shelter.Status // shelter connection status: disconnected/connecting/connected/failed
+	shelter    shelter.Status // shelter connection status: disconnected/connecting/connected/failed
+	shelterErr string         // reason for the last failed connect attempt, if any
+
+	width, height int // last known terminal size, from tea.WindowSizeMsg
 }
 
 // NewModel builds the initial model: setup screen if no valid config
@@ -48,7 +51,7 @@ func NewModel() Model {
 	ip2.Width = 30
 
 	dnsIn := textinput.New()
-	dnsIn.Placeholder = "google.com"
+	dnsIn.Placeholder = "your dns key"
 	dnsIn.CharLimit = 64
 	dnsIn.Width = 30
 
@@ -88,6 +91,10 @@ func (m Model) allFilled() bool {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if wsMsg, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width, m.height = wsMsg.Width, wsMsg.Height
+		return m, nil
+	}
 	switch m.screen {
 	case screenSetup:
 		return m.updateSetup(msg)
@@ -191,8 +198,10 @@ func (m Model) updateMain(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case shelterMsg:
 		if msg.err != nil {
 			logging.Logf("tui: shelter connect attempt finished with error: %v (final status=%s)", msg.err, msg.status.State)
+			m.shelterErr = msg.err.Error()
 		} else {
 			logging.Logf("tui: shelter connect attempt finished OK (status=%s)", msg.status.State)
+			m.shelterErr = ""
 		}
 		m.shelter = msg.status
 		return m, nil

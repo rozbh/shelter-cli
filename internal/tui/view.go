@@ -1,12 +1,27 @@
 package tui
 
 import (
+	"fmt"
+
 	"github.com/charmbracelet/lipgloss"
 
 	"shelter-cli/internal/shelter"
 )
 
+// uiWidth is the single content width shared by both screens, so switching
+// between setup and main (via 'c') doesn't resize/jump the box. Chosen to
+// just fit the widest row (checks table incl. "timeout" latency) with room
+// to spare — keeps the whole box small and fixed rather than stretching.
+const uiWidth = 44
+
+// minTerminalWidth is uiWidth plus box border+padding+outer margin. Below
+// this, the terminal itself wraps/clips the box unpredictably (border and
+// left edge get cut off), so View() falls back to a plain message instead.
+const minTerminalWidth = uiWidth + 2 /*border*/ + 6 /*padding*/ + 2 /*margin*/
+
 var (
+	outerStyle = lipgloss.NewStyle().MarginLeft(2)
+
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("#00FF9C")).
@@ -32,6 +47,10 @@ var (
 			Bold(true).
 			Foreground(lipgloss.Color("#FF5F5F"))
 
+	errDetailStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FF8C8C")).
+			Width(uiWidth)
+
 	checkLabelStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#7D7D7D")).
 			Width(14)
@@ -46,6 +65,9 @@ var (
 )
 
 func (m Model) View() string {
+	if m.width > 0 && m.width < minTerminalWidth {
+		return fmt.Sprintf("\n  terminal too small — resize to at least %d columns wide\n", minTerminalWidth)
+	}
 	if m.screen == screenSetup {
 		return m.viewSetup()
 	}
@@ -55,7 +77,7 @@ func (m Model) View() string {
 func (m Model) viewSetup() string {
 	labels := []string{"DNS 1", "DNS 2", "DNS Key"}
 	lines := []string{
-		titleStyle.Width(40).Render("SETUP"),
+		titleStyle.Width(uiWidth).Render("SETUP"),
 		"",
 	}
 	for i, in := range m.inputs {
@@ -72,7 +94,7 @@ func (m Model) viewSetup() string {
 
 	box := boxStyle.Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 	help := helpStyle.Render("tab/↑/↓ move  ·  enter confirm  ·  esc quit")
-	return lipgloss.JoinVertical(lipgloss.Center, "\n"+box, help+"\n")
+	return outerStyle.Render(lipgloss.JoinVertical(lipgloss.Center, "\n"+box, help+"\n"))
 }
 
 // shelterStatusStyled renders shelter status with color matching its state.
@@ -96,7 +118,7 @@ func (m Model) viewMain() string {
 		content = "running checks..."
 	} else {
 		lines := make([]string, 0, len(m.checks)+2)
-		lines = append(lines, titleStyle.Width(46).Render("CONNECTIVITY"))
+		lines = append(lines, titleStyle.Width(uiWidth).Render("CONNECTIVITY"))
 		lines = append(lines, "")
 		for _, c := range m.checks {
 			var status string
@@ -118,6 +140,9 @@ func (m Model) viewMain() string {
 		}
 		lines = append(lines, "")
 		lines = append(lines, checkLabelStyle.Render("Shelter")+shelterStatusStyled(m.shelter.State))
+		if m.shelter.State == shelter.Failed && m.shelterErr != "" {
+			lines = append(lines, errDetailStyle.Render(m.shelterErr))
+		}
 
 		if m.loading {
 			lines = append(lines, "")
@@ -132,5 +157,5 @@ func (m Model) viewMain() string {
 	box := boxStyle.Render(content)
 	help := helpStyle.Render("auto-refresh every 10s  ·  r refresh now  ·  c reconfigure  ·  q quit")
 
-	return lipgloss.JoinVertical(lipgloss.Center, "\n"+box, help+"\n")
+	return outerStyle.Render(lipgloss.JoinVertical(lipgloss.Center, "\n"+box, help+"\n"))
 }

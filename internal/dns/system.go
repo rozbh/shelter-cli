@@ -3,11 +3,13 @@
 package dns
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"runtime"
 	"strings"
+	"time"
 
 	"shelter-cli/internal/logging"
 )
@@ -16,6 +18,27 @@ const (
 	FallbackDNS1 = "8.8.8.8"
 	FallbackDNS2 = "1.1.1.1"
 )
+
+// cmdTimeout bounds every external command this package shells out to
+// (nmcli/resolvectl/networksetup/powershell/ip route/...). Without it, a
+// single hung system call (e.g. NetworkManager/D-Bus stuck, a polkit prompt
+// nobody can answer) blocks the connect attempt forever — the app never
+// gets an error back, so it never retries and just looks dead.
+const cmdTimeout = 20 * time.Second
+
+// runCmd runs an external command with cmdTimeout enforced, so callers
+// always get a result (success, real error, or a clear timeout error)
+// instead of hanging indefinitely.
+func runCmd(name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return out, fmt.Errorf("%s %s: timed out after %s", name, strings.Join(args, " "), cmdTimeout)
+	}
+	return out, err
+}
 
 // isElevated reports whether we can change system DNS without the OS
 // prompting for credentials (root on linux/mac). windows is left true here —
@@ -65,8 +88,8 @@ func SetSystemDNS(dns1, dns2 string) error {
 // findDefaultWindowsInterface asks Windows routing table directly for the
 // interface carrying the default route — not just "any connected" iface.
 func findDefaultWindowsInterfaceIndex() (string, error) {
-	out, err := exec.Command("powershell", "-NoProfile", "-Command",
-		`(Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Sort-Object -Property RouteMetric | Select-Object -First 1 -ExpandProperty InterfaceIndex)`).CombinedOutput()
+	out, err := runCmd("powershell", "-NoProfile", "-Command",
+		`(Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Sort-Object -Property RouteMetric | Select-Object -First 1 -ExpandProperty InterfaceIndex)`)
 	if err != nil {
 		return "", fmt.Errorf("get-netroute default index: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
@@ -92,14 +115,14 @@ func setDNSWindows(dns1, dns2 string) error {
 		`Set-DnsClientServerAddress -InterfaceIndex %s -ServerAddresses ("%s","%s")`,
 		idx, dns1, dns2,
 	)
-	out, err := exec.Command("powershell", "-NoProfile", "-Command", script).CombinedOutput()
+	out, err := runCmd("powershell", "-NoProfile", "-Command", script)
 	if err != nil {
 		logging.Logf("dns(windows): set FAILED: %v (%s)", err, string(out))
 		return fmt.Errorf("set-dnsclientserveraddress ifidx %s: %w (%s)", idx, err, strings.TrimSpace(string(out)))
 	}
 
-	verify, _ := exec.Command("powershell", "-NoProfile", "-Command",
-		fmt.Sprintf(`(Get-DnsClientServerAddress -InterfaceIndex %s -AddressFamily IPv4).ServerAddresses`, idx)).CombinedOutput()
+	verify, _ := runCmd("powershell", "-NoProfile", "-Command",
+		fmt.Sprintf(`(Get-DnsClientServerAddress -InterfaceIndex %s -AddressFamily IPv4).ServerAddresses`, idx))
 	logging.Logf("dns(windows): readback after set: %s", strings.TrimSpace(string(verify)))
 
 	return nil
@@ -111,7 +134,7 @@ func setDNSWindows(dns1, dns2 string) error {
 // the default route, then maps it to a network service name so DNS gets set
 // on the one connection actually in use — not every active service.
 func findDefaultMacInterface() (string, error) {
-	out, err := exec.Command("route", "-n", "get", "default").CombinedOutput()
+	out, err := runCmd("route", "-n", "get", "default")
 	if err != nil {
 		return "", fmt.Errorf("route -n get default: %w", err)
 	}
@@ -129,7 +152,7 @@ func findDefaultMacInterface() (string, error) {
 	logging.Logf("dns(mac): default-route device is %q", device)
 
 	// map device (en0) -> network service name (e.g. "Wi-Fi")
-	hw, err := exec.Command("networksetup", "-listallhardwareports").CombinedOutput()
+	hw, err := runCmd("networksetup", "-listallhardwareports")
 	if err != nil {
 		return "", fmt.Errorf("listallhardwareports: %w", err)
 	}
@@ -157,7 +180,7 @@ func setDNSMac(dns1, dns2 string) error {
 	}
 	logging.Logf("dns(mac): setting dns on active service %q only", svc)
 
-	out, err := exec.Command("networksetup", "-setdnsservers", svc, dns1, dns2).CombinedOutput()
+	out, err := runCmd("networksetup", "-setdnsservers", svc, dns1, dns2)
 	if err != nil {
 		logging.Logf("dns(mac): set on %q FAILED: %v (%s)", svc, err, string(out))
 		return fmt.Errorf("set dns on %q: %w (%s)", svc, err, string(out))
@@ -170,7 +193,7 @@ func setDNSMac(dns1, dns2 string) error {
 
 // findDefaultLinuxInterface reads the default route to get the active iface name.
 func findDefaultLinuxInterface() (string, error) {
-	out, err := exec.Command("ip", "route", "get", "8.8.8.8").CombinedOutput()
+	out, err := runCmd("ip", "route", "get", "8.8.8.8")
 	if err != nil {
 		return "", fmt.Errorf("ip route get 8.8.8.8: %w", err)
 	}
@@ -211,7 +234,7 @@ func setDNSLinux(dns1, dns2 string) error {
 // sets ipv4.dns directly on it, disables ipv4.ignore-auto-dns so NM stops
 // re-pushing DHCP/router DNS, then reactivates the connection.
 func setDNSViaNetworkManager(iface, dns1, dns2 string) error {
-	out, err := exec.Command("nmcli", "-t", "-f", "GENERAL.CONNECTION", "device", "show", iface).CombinedOutput()
+	out, err := runCmd("nmcli", "-t", "-f", "GENERAL.CONNECTION", "device", "show", iface)
 	if err != nil {
 		return fmt.Errorf("nmcli device show %q: %w (%s)", iface, err, strings.TrimSpace(string(out)))
 	}
@@ -224,12 +247,12 @@ func setDNSViaNetworkManager(iface, dns1, dns2 string) error {
 	logging.Logf("dns(linux): iface %q bound to NM connection %q", iface, conn)
 
 	dnsVal := dns1 + " " + dns2
-	if out, err := exec.Command("nmcli", "con", "mod", conn, "ipv4.dns", dnsVal, "ipv4.ignore-auto-dns", "yes").CombinedOutput(); err != nil {
+	if out, err := runCmd("nmcli", "con", "mod", conn, "ipv4.dns", dnsVal, "ipv4.ignore-auto-dns", "yes"); err != nil {
 		return fmt.Errorf("nmcli con mod %q: %w (%s)", conn, err, strings.TrimSpace(string(out)))
 	}
 	logging.Logf("dns(linux): set ipv4.dns=%q ignore-auto-dns=yes on connection %q", dnsVal, conn)
 
-	if out, err := exec.Command("nmcli", "con", "up", conn).CombinedOutput(); err != nil {
+	if out, err := runCmd("nmcli", "con", "up", conn); err != nil {
 		return fmt.Errorf("nmcli con up %q: %w (%s)", conn, err, strings.TrimSpace(string(out)))
 	}
 	logging.Logf("dns(linux): reactivated connection %q with new dns", conn)
@@ -248,35 +271,23 @@ func setDNSViaResolvectl(iface, dns1, dns2 string) error {
 	}
 
 	logging.Logf("dns(linux): running: resolvectl dns %s %s %s", iface, dns1, dns2)
-	out, err := exec.Command("resolvectl", "dns", iface, dns1, dns2).CombinedOutput()
+	out, err := runCmd("resolvectl", "dns", iface, dns1, dns2)
 	if err != nil {
 		return fmt.Errorf("resolvectl dns %s %s %s failed (need root/sudo?): %w (%s)",
 			iface, dns1, dns2, err, strings.TrimSpace(string(out)))
 	}
-	verify, _ := exec.Command("resolvectl", "dns", iface).CombinedOutput()
+	verify, _ := runCmd("resolvectl", "dns", iface)
 	logging.Logf("dns(linux): readback after set: %s", strings.TrimSpace(string(verify)))
 	return nil
 }
 
 func flushDNSCache() {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "windows":
-		cmd = exec.Command("ipconfig", "/flushdns")
-	case "darwin":
-		return
-		//cmd = exec.Command("dscacheutil", "-flushcache")
-	case "linux":
-		if _, err := exec.LookPath("resolvectl"); err == nil {
-			return
-			//cmd = exec.Command("resolvectl", "flush-caches")
-		} else {
-			return // no systemd-resolved, nothing to flush
-		}
-	default:
+	if runtime.GOOS != "windows" {
+		// darwin: no-op (see history). linux: resolvectl doesn't need an
+		// explicit flush here, and there's nothing to flush without it.
 		return
 	}
-	out, err := cmd.CombinedOutput()
+	out, err := runCmd("ipconfig", "/flushdns")
 	if err != nil {
 		logging.Logf("dns: flush cache FAILED (%s): %v (%s)", runtime.GOOS, err, strings.TrimSpace(string(out)))
 		return

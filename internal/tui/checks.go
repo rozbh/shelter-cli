@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -31,12 +32,17 @@ type checkResult struct {
 var rttRe = regexp.MustCompile(`time[=<]([0-9.]+)\s*ms`)
 
 // pingTarget runs one ICMP ping and returns ok + round-trip latency string.
+// wrapped in its own context timeout (on top of ping's own -W/-w flag) so a
+// hung ping binary can't wedge a checks cycle forever.
 func pingTarget(host string) (bool, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		cmd = exec.Command("ping", "-n", "1", "-w", "10000", host)
+		cmd = exec.CommandContext(ctx, "ping", "-n", "1", "-w", "10000", host)
 	} else {
-		cmd = exec.Command("ping", "-c", "1", "-W", "10", host)
+		cmd = exec.CommandContext(ctx, "ping", "-c", "1", "-W", "10", host)
 	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
